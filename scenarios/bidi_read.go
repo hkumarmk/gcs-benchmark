@@ -20,12 +20,12 @@ const (
 // REST:  N goroutines each issuing one HTTP Range request concurrently over the shared HTTP/2 pool.
 // gRPC:  N goroutines issuing concurrent range reads; the gRPC transport multiplexes over one stream.
 //
-// Both sides are fully pipelined — this measures API design difference, not transport difference.
+// Requires BidiReadObject private preview access — use --scenarios bidi-read explicitly.
 func BidiRead(numRanges int) ScenarioFn {
 	ranges := buildRanges(numRanges)
 	key := setup.RangePrefix + "100m"
 
-	return func(ctx context.Context, c client.StorageClient) (time.Duration, int64, error) {
+	return func(ctx context.Context, c client.StorageClient, workerID int) (time.Duration, int64, error) {
 		results, err := c.ReadRangesPipelined(ctx, key, ranges)
 		if err != nil {
 			return 0, 0, fmt.Errorf("pipelined range read: %w", err)
@@ -39,7 +39,7 @@ func BidiRead(numRanges int) ScenarioFn {
 			}
 			totalBytes += int64(len(r.Data))
 			if minTTFB == 0 || r.TTFB < minTTFB {
-				minTTFB = r.TTFB // TTFB = time to first byte of first range to arrive
+				minTTFB = r.TTFB
 			}
 		}
 		return minTTFB, totalBytes, nil

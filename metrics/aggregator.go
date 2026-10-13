@@ -26,8 +26,9 @@ type Result struct {
 	P50TTFBMs float64
 	P95TTFBMs float64
 
-	ThroughputMBps float64
-	OpsPerSec      float64
+	ThroughputMBps    float64 // aggregate: totalBytes / wallTime — scales with concurrency
+	OpsPerSec         float64 // aggregate: successfulOps / wallTime — scales with concurrency
+	PerOpBandwidthMBs float64 // per-operation: objectSize / p50Latency — transport comparison metric
 
 	AvgCPUPercent float64 // populated externally by scenario runner
 }
@@ -85,6 +86,12 @@ func Aggregate(iters []Iteration, totalWallTime time.Duration) Result {
 
 	if totalWallTime > 0 && len(latencies) > 0 {
 		r.OpsPerSec = float64(len(latencies)) / totalWallTime.Seconds()
+	}
+
+	// Per-operation bandwidth: objectSize / p50Latency — independent of concurrency.
+	// Only meaningful for read/write scenarios (not head/list where objectSize is 0).
+	if r.P50LatencyMs > 0 && first.ObjectSize > 0 {
+		r.PerOpBandwidthMBs = float64(first.ObjectSize) / (r.P50LatencyMs / 1000.0) / (1024 * 1024)
 	}
 
 	return r

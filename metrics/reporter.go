@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // WriteJSON writes a single Result to a JSON file in outputDir.
@@ -15,8 +16,9 @@ func WriteJSON(r Result, iters []Iteration, outputDir string) error {
 		return err
 	}
 
+	sizeLabel := strings.ReplaceAll(r.ObjectSizeLabel, "/", "-")
 	filename := fmt.Sprintf("%s_%s_%s_c%d.json",
-		r.Scenario, r.Transport, r.ObjectSizeLabel, r.Concurrency)
+		r.Scenario, r.Transport, sizeLabel, r.Concurrency)
 
 	type output struct {
 		Result
@@ -55,7 +57,7 @@ func WriteCSVSummary(results []Result, outputDir string) error {
 		"p50_latency_ms", "p95_latency_ms", "p99_latency_ms",
 		"min_latency_ms", "max_latency_ms",
 		"p50_ttfb_ms", "p95_ttfb_ms",
-		"throughput_mbps", "ops_per_sec", "avg_cpu_pct",
+		"per_op_bw_mbps", "agg_throughput_mbps", "ops_per_sec", "avg_cpu_pct",
 	}
 	if err := w.Write(header); err != nil {
 		return err
@@ -71,7 +73,7 @@ func WriteCSVSummary(results []Result, outputDir string) error {
 			ff(r.P50LatencyMs), ff(r.P95LatencyMs), ff(r.P99LatencyMs),
 			ff(r.MinLatencyMs), ff(r.MaxLatencyMs),
 			ff(r.P50TTFBMs), ff(r.P95TTFBMs),
-			ff(r.ThroughputMBps), ff(r.OpsPerSec), ff(r.AvgCPUPercent),
+			ff(r.PerOpBandwidthMBs), ff(r.ThroughputMBps), ff(r.OpsPerSec), ff(r.AvgCPUPercent),
 		}
 		if err := w.Write(row); err != nil {
 			return err
@@ -81,10 +83,13 @@ func WriteCSVSummary(results []Result, outputDir string) error {
 }
 
 // PrintTable prints a formatted comparison table to stdout with delta rows.
+// MB/s column is per-operation bandwidth (objectSize/p50Latency) — independent of concurrency.
+// Use summary.csv for aggregate throughput (agg_throughput_mbps) and ops/sec.
 func PrintTable(results []Result) {
 	fmt.Printf("\n%-20s %-8s %-12s %-6s %8s %8s %8s %8s %8s %6s\n",
 		"Scenario", "Size", "Concurrency", "Client",
-		"P50(ms)", "P95(ms)", "P99(ms)", "MB/s", "OPS/s", "CPU%")
+		"P50(ms)", "P95(ms)", "P99(ms)", "MB/s*", "OPS/s", "CPU%")
+	fmt.Printf("  * MB/s = per-op bandwidth (objectSize/p50Latency) — not affected by concurrency level\n")
 	fmt.Println(repeat("─", 102))
 
 	// Group results in pairs (REST then gRPC) for delta rows
@@ -107,7 +112,7 @@ func PrintTable(results []Result) {
 		fmt.Printf("%-20s %-8s %-12d %-6s %8.1f %8.1f %8.1f %8.2f %8.1f %6.1f\n",
 			r.Scenario, r.ObjectSizeLabel, r.Concurrency, r.Transport,
 			r.P50LatencyMs, r.P95LatencyMs, r.P99LatencyMs,
-			r.ThroughputMBps, r.OpsPerSec, r.AvgCPUPercent)
+			r.PerOpBandwidthMBs, r.OpsPerSec, r.AvgCPUPercent)
 
 		k := key{r.Scenario, r.ObjectSizeLabel, r.Concurrency}
 		pair := byKey[k]
@@ -118,7 +123,7 @@ func PrintTable(results []Result) {
 				pct(rest.P50LatencyMs, grpc.P50LatencyMs),
 				pct(rest.P95LatencyMs, grpc.P95LatencyMs),
 				pct(rest.P99LatencyMs, grpc.P99LatencyMs),
-				pct(rest.ThroughputMBps, grpc.ThroughputMBps),
+				pct(rest.PerOpBandwidthMBs, grpc.PerOpBandwidthMBs),
 				pct(rest.OpsPerSec, grpc.OpsPerSec))
 			fmt.Println()
 		}

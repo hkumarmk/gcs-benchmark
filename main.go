@@ -54,7 +54,8 @@ func main() {
 
 	for _, scenarioName := range cfg.Scenarios {
 		for _, transport := range cfg.Clients {
-			c, err := buildClient(ctx, transport, cfg.Bucket)
+			isBidi := scenarioName == "bidi-read" || scenarioName == "bidi-write"
+			c, err := buildClient(ctx, transport, cfg.Bucket, isBidi)
 			if err != nil {
 				log.Fatalf("build %s client: %v", transport, err)
 			}
@@ -109,6 +110,9 @@ func main() {
 				}
 			}
 
+			if err := metrics.WriteConnStats(transport, c.ConnStats(), cfg.OutputDir); err != nil {
+				fmt.Fprintf(os.Stderr, "write conn stats: %v\n", err)
+			}
 			c.Close()
 		}
 
@@ -126,11 +130,16 @@ func main() {
 	fmt.Printf("\nResults written to %s\n", cfg.OutputDir)
 }
 
-func buildClient(ctx context.Context, transport, bucket string) (client.StorageClient, error) {
+func buildClient(ctx context.Context, transport, bucket string, bidi bool) (client.StorageClient, error) {
 	switch transport {
 	case "rest":
 		return client.NewRESTClient(ctx, bucket)
+	case "rest-pool1":
+		return client.NewRESTClientPool1(ctx, bucket)
 	case "grpc":
+		if bidi {
+			return client.NewGRPCBidiClient(ctx, bucket)
+		}
 		return client.NewGRPCClient(ctx, bucket)
 	default:
 		return nil, fmt.Errorf("unknown transport %q", transport)

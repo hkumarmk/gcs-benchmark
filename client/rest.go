@@ -2,32 +2,118 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
+	"net/http"
+	"net/http/httptrace"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/storage"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 )
 
-// RESTClient wraps the official GCS client using the default HTTP/2 transport.
+// RESTClient wraps the official GCS client using the HTTP/2 transport.
 type RESTClient struct {
-	sc     *storage.Client
-	bucket string
+	sc        *storage.Client
+	bucket    string
+	transport string
+	stats     AtomicConnStats
 }
 
-// NewRESTClient constructs a GCS client using the HTTP transport.
-// google-cloud-go/storage uses HTTP/2 by default via ALPN negotiation.
-// Credentials are resolved via Application Default Credentials.
+// NewRESTClient constructs a GCS client using the default HTTP transport.
+// Uses Go's default connection pool which may open multiple TCP connections under concurrency.
 func NewRESTClient(ctx context.Context, bucket string) (*RESTClient, error) {
-	sc, err := storage.NewClient(ctx)
+	c := &RESTClient{bucket: bucket, transport: "rest"}
+	httpClient, err := newAuthenticatedClient(ctx, 0, &c.stats)
 	if err != nil {
 		return nil, err
 	}
-	return &RESTClient{sc: sc, bucket: bucket}, nil
+	sc, err := storage.NewClient(ctx, option.WithHTTPClient(httpClient))
+	if err != nil {
+		return nil, err
+	}
+	c.sc = sc
+	return c, nil
 }
 
-func (c *RESTClient) TransportName() string { return "rest" }
+// NewRESTClientPool1 constructs a GCS client forced to use a single HTTP/2 connection.
+// MaxIdleConnsPerHost=1 and MaxConnsPerHost=1 — all concurrent requests are multiplexed
+// as HTTP/2 streams on one TCP connection, equivalent to gRPC's single-channel model.
+func NewRESTClientPool1(ctx context.Context, bucket string) (*RESTClient, error) {
+	c := &RESTClient{bucket: bucket, transport: "rest-pool1"}
+	httpClient, err := newAuthenticatedClient(ctx, 1, &c.stats)
+	if err != nil {
+		return nil, err
+	}
+	sc, err := storage.NewClient(ctx, option.WithHTTPClient(httpClient))
+	if err != nil {
+		return nil, err
+	}
+	c.sc = sc
+	return c, nil
+}
+
+// newAuthenticatedClient builds an http.Client with:
+//  1. ADC credentials via oauth2.Transport
+//  2. httptrace hooks for connection counting
+//  3. Optional MaxIdleConnsPerHost/MaxConnsPerHost (0 = use defaults)
+func newAuthenticatedClient(ctx context.Context, maxConnsPerHost int, stats *AtomicConnStats) (*http.Client, error) {
+	creds, err := google.FindDefaultCredentials(ctx, storage.ScopeFullControl)
+	if err != nil {
+		return nil, err
+	}
+
+	base := &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{},
+	}
+	if maxConnsPerHost > 0 {
+		base.MaxIdleConnsPerHost = maxConnsPerHost
+		base.MaxConnsPerHost = maxConnsPerHost
+	}
+
+	traced := &tracedRoundTripper{base: base, stats: stats}
+
+	// oauth2.Transport adds Authorization header; traced transport handles connection tracking
+	authTransport := &oauth2.Transport{
+		Source: creds.TokenSource,
+		Base:   traced,
+	}
+
+	return &http.Client{Transport: authTransport}, nil
+}
+
+// tracedRoundTripper wraps an http.RoundTripper with httptrace hooks to count connections.
+type tracedRoundTripper struct {
+	base  http.RoundTripper
+	stats *AtomicConnStats
+}
+
+func (t *tracedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			if info.Reused {
+				t.stats.RecordReused()
+			} else {
+				t.stats.RecordNew()
+			}
+		},
+		TLSHandshakeDone: func(state tls.ConnectionState, err error) {
+			if err == nil && state.NegotiatedProtocol == "h2" {
+				t.stats.RecordHTTP2()
+			}
+		},
+	}
+	return t.base.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+}
+
+func (c *RESTClient) TransportName() string { return c.transport }
+
+func (c *RESTClient) ConnStats() ConnStats { return c.stats.Snapshot() }
 
 func (c *RESTClient) Read(ctx context.Context, object string) ([]byte, time.Duration, error) {
 	r, err := c.sc.Bucket(c.bucket).Object(object).NewReader(ctx)
@@ -122,8 +208,6 @@ func (c *RESTClient) ReadRange(ctx context.Context, object string, offset, lengt
 	return data, ttfb, nil
 }
 
-// ReadRangesPipelined issues all range reads concurrently — N goroutines, all in-flight simultaneously
-// over the shared HTTP/2 connection pool. This is the best achievable REST pattern for pipelined reads.
 func (c *RESTClient) ReadRangesPipelined(ctx context.Context, object string, ranges []Range) ([]RangeResult, error) {
 	results := make([]RangeResult, len(ranges))
 	var wg sync.WaitGroup
@@ -148,8 +232,6 @@ func (c *RESTClient) ReadRangesPipelined(ctx context.Context, object string, ran
 	return results, nil
 }
 
-// WriteStreaming uses GCS resumable upload — POST to initiate session, stream body in chunks.
-// Returns time to first server acknowledgement (TTFB equivalent for writes).
 func (c *RESTClient) WriteStreaming(ctx context.Context, object string, data []byte, chunkSize int) (time.Duration, error) {
 	w := c.sc.Bucket(c.bucket).Object(object).NewWriter(ctx)
 	w.ChunkSize = chunkSize

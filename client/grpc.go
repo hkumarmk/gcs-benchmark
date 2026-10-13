@@ -27,6 +27,19 @@ type GRPCClient struct {
 // Credentials are resolved via Application Default Credentials.
 func NewGRPCClient(ctx context.Context, bucket string) (*GRPCClient, error) {
 	sc, err := storage.NewGRPCClient(ctx,
+		storage.WithDisabledClientMetrics(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &GRPCClient{sc: sc, bucket: bucket}, nil
+}
+
+// NewGRPCBidiClient constructs a gRPC client with BidiReadObject and BidiWriteObject enabled.
+// Requires the GCP project to be enrolled in the BidiReadObject preview programme.
+// Use this only for bidi-read and bidi-write scenarios.
+func NewGRPCBidiClient(ctx context.Context, bucket string) (*GRPCClient, error) {
+	sc, err := storage.NewGRPCClient(ctx,
 		storage.WithGRPCBidiReads(),
 		storage.WithAppendableUploads(),
 		storage.WithDisabledClientMetrics(),
@@ -38,6 +51,15 @@ func NewGRPCClient(ctx context.Context, bucket string) (*GRPCClient, error) {
 }
 
 func (c *GRPCClient) TransportName() string { return "grpc" }
+
+// ConnStats returns fixed stats for gRPC — always one channel, no TCP connection tracking.
+func (c *GRPCClient) ConnStats() ConnStats {
+	return ConnStats{
+		NewConnections:   1,
+		ReusedConns:      -1, // not applicable — gRPC multiplexes streams, not connections
+		HTTP2Connections: 1,
+	}
+}
 
 func (c *GRPCClient) Read(ctx context.Context, object string) ([]byte, time.Duration, error) {
 	r, err := c.sc.Bucket(c.bucket).Object(object).NewReader(ctx)

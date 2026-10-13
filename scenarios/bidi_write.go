@@ -29,11 +29,11 @@ var ChunkSizes = []int{
 // REST:  GCS resumable upload — POST to initiate session, stream body in chunks.
 // gRPC:  BidiWriteObject — stream via gRPC transport (WithAppendableUploads).
 //
-// Returns time to first server acknowledgement as TTFB equivalent.
+// Requires BidiWriteObject private preview access — use --scenarios bidi-write explicitly.
 func BidiWrite(chunkSize int) ScenarioFn {
-	return func(ctx context.Context, c client.StorageClient) (time.Duration, int64, error) {
-		key := fmt.Sprintf("%s100m/%s/chunk%d/%d",
-			setup.WritePrefix, c.TransportName(), chunkSize/1024, time.Now().UnixNano())
+	return func(ctx context.Context, c client.StorageClient, workerID int) (time.Duration, int64, error) {
+		key := fmt.Sprintf("%s100m/%s/chunk%d/w%d/%d",
+			setup.WritePrefix, c.TransportName(), chunkSize/1024, workerID, time.Now().UnixNano())
 		firstAck, err := c.WriteStreaming(ctx, key, write100m, chunkSize)
 		if err != nil {
 			return 0, 0, fmt.Errorf("streaming write: %w", err)

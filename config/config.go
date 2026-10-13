@@ -33,17 +33,17 @@ func Parse() (*Config, error) {
 	flag.StringVar(&c.Project, "project", "", "GCP project ID (required)")
 	flag.StringVar(&c.Region, "region", "us-central1", "Bucket region")
 
-	scenarios := flag.String("scenarios", "all", "Scenarios: read,write,head,list,bidi-read,bidi-write,all")
-	sizes := flag.String("sizes", "4k,64k,1m,10m,100m", "Object sizes: 4k,64k,1m,10m,100m")
-	concurrency := flag.String("concurrency", "1,4,16,64", "Concurrency levels")
-	clients := flag.String("clients", "all", "Clients: rest,grpc,all")
+	scenarios := flag.String("scenarios", "read,write,head,list", "Scenarios: read,write,head,list,bidi-read,bidi-write (bidi-* require GCP preview access)")
+	sizes := flag.String("sizes", "4k,64k,1m,10m", "Object sizes: 4k,64k,1m,10m")
+	concurrency := flag.String("concurrency", "1,4,8,16", "Concurrency levels")
+	clients := flag.String("clients", "all", "Clients: rest,rest-pool1,grpc,all")
 
-	flag.IntVar(&c.Iterations, "iterations", 20, "Measurement iterations per scenario/size/concurrency")
+	flag.IntVar(&c.Iterations, "iterations", 20, "Measurement iterations per worker per scenario/size/concurrency (total = iterations * concurrency)")
 	flag.IntVar(&c.Warmup, "warmup", 5, "Warmup iterations to discard")
 	flag.StringVar(&c.OutputDir, "output-dir", "./results", "Directory for output files")
 	flag.StringVar(&c.OutputFormat, "output-format", "both", "Output format: json,csv,both")
 	flag.BoolVar(&c.Setup, "setup", true, "Run setup phase")
-	flag.BoolVar(&c.Teardown, "teardown", true, "Run teardown phase")
+	flag.BoolVar(&c.Teardown, "teardown", false, "Run teardown phase (default false — reuse bucket across runs)")
 	flag.DurationVar(&c.IdleBetween, "idle-between", 30*time.Second, "Idle time between scenarios")
 
 	flag.Parse()
@@ -79,7 +79,8 @@ func Parse() (*Config, error) {
 func parseScenarios(s string) ([]string, error) {
 	all := []string{"read", "write", "head", "list", "bidi-read", "bidi-write"}
 	if s == "all" {
-		return all, nil
+		// "all" excludes bidi-* which require GCP private preview access
+		return []string{"read", "write", "head", "list"}, nil
 	}
 	valid := map[string]bool{}
 	for _, v := range all {
@@ -138,9 +139,9 @@ func parseConcurrency(s string) ([]int, error) {
 
 func parseClients(s string) ([]string, error) {
 	if s == "all" {
-		return []string{"rest", "grpc"}, nil
+		return []string{"rest", "rest-pool1", "grpc"}, nil
 	}
-	valid := map[string]bool{"rest": true, "grpc": true}
+	valid := map[string]bool{"rest": true, "rest-pool1": true, "grpc": true}
 	var result []string
 	for _, tok := range strings.Split(s, ",") {
 		tok = strings.TrimSpace(tok)

@@ -18,6 +18,7 @@ const (
 	ListingPrefix = "listing-bench/"
 	WritePrefix   = "write-bench/"
 	ListingCount  = 1000
+	MaxWorkers    = 16 // number of per-worker object copies staged per transport per size
 )
 
 // ObjectSizes are the fixture sizes uploaded during setup.
@@ -26,11 +27,16 @@ var ObjectSizes = []int64{
 	64 * 1024,
 	1 * 1024 * 1024,
 	10 * 1024 * 1024,
-	100 * 1024 * 1024,
 }
 
-// Setup creates the bucket if needed, uploads all fixture objects, and populates the listing prefix.
-// All random bytes use a fixed seed for reproducibility.
+// ReadKey returns the object key for a given transport, worker ID, and size.
+// Each worker has its own dedicated object to avoid cross-worker cache effects.
+func ReadKey(transport string, workerID int, size int64) string {
+	return fmt.Sprintf("%s%s/worker-%d/%s", ReadPrefix, transport, workerID, SizeKey(size))
+}
+
+// Setup creates the bucket if needed, uploads source fixtures, copies them per transport/worker,
+// and populates the listing prefix.
 func Setup(ctx context.Context, sc *storage.Client, project, bucket, region string) error {
 	if err := ensureBucket(ctx, sc, project, bucket, region); err != nil {
 		return fmt.Errorf("ensure bucket: %w", err)
@@ -38,24 +44,32 @@ func Setup(ctx context.Context, sc *storage.Client, project, bucket, region stri
 
 	rng := rand.New(rand.NewSource(42))
 
-	fmt.Println("Uploading read fixtures...")
+	// Upload one source object per size
+	fmt.Println("Uploading source fixtures...")
 	for _, size := range ObjectSizes {
 		data := make([]byte, size)
 		rng.Read(data)
-		key := fmt.Sprintf("%s%s", ReadPrefix, sizeKey(size))
+		key := fmt.Sprintf("%ssrc/%s", ReadPrefix, sizeKey(size))
 		if err := upload(ctx, sc, bucket, key, data); err != nil {
 			return fmt.Errorf("upload %s: %w", key, err)
 		}
 		fmt.Printf("  uploaded %s (%d bytes)\n", key, size)
 	}
 
-	fmt.Println("Uploading range-read fixture (100MB)...")
-	data100m := make([]byte, 100*1024*1024)
-	rng.Read(data100m)
-	rangeKey := RangePrefix + "100m"
-	if err := upload(ctx, sc, bucket, rangeKey, data100m); err != nil {
-		return fmt.Errorf("upload range fixture: %w", err)
+	// Server-side copy source objects to per-transport per-worker keys
+	fmt.Printf("Copying fixtures for %d workers x 3 transports...\n", MaxWorkers)
+	for _, transport := range []string{"rest", "rest-pool1", "grpc"} {
+		for workerID := 0; workerID < MaxWorkers; workerID++ {
+			for _, size := range ObjectSizes {
+				src := fmt.Sprintf("%ssrc/%s", ReadPrefix, sizeKey(size))
+				dst := ReadKey(transport, workerID, size)
+				if err := serverCopy(ctx, sc, bucket, src, dst); err != nil {
+					return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
+				}
+			}
+		}
 	}
+	fmt.Printf("  copied %d objects\n", MaxWorkers*3*len(ObjectSizes))
 
 	fmt.Printf("Uploading %d listing fixtures (concurrent)...\n", ListingCount)
 	if err := uploadListing(ctx, sc, bucket); err != nil {
@@ -98,8 +112,6 @@ func sizeKey(size int64) string {
 		return "1m"
 	case 10 * 1024 * 1024:
 		return "10m"
-	case 100 * 1024 * 1024:
-		return "100m"
 	default:
 		return fmt.Sprintf("%db", size)
 	}
@@ -112,7 +124,6 @@ func ensureBucket(ctx context.Context, sc *storage.Client, project, bucket, regi
 		fmt.Printf("Bucket %s already exists.\n", bucket)
 		return nil
 	}
-	// ErrBucketNotExist (possibly wrapped) or a 404 googleapi error both mean bucket needs creating
 	var apiErr *googleapi.Error
 	if !errors.Is(err, storage.ErrBucketNotExist) {
 		if !errors.As(err, &apiErr) || apiErr.Code != 404 {
@@ -132,11 +143,16 @@ func upload(ctx context.Context, sc *storage.Client, bucket, key string, data []
 	return w.Close()
 }
 
+func serverCopy(ctx context.Context, sc *storage.Client, bucket, src, dst string) error {
+	_, err := sc.Bucket(bucket).Object(dst).CopierFrom(sc.Bucket(bucket).Object(src)).Run(ctx)
+	return err
+}
+
 func uploadListing(ctx context.Context, sc *storage.Client, bucket string) error {
 	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	errc := make(chan error, ListingCount)
-	payload := []byte("x") // 1-byte objects for listing fixtures
+	payload := []byte("x")
 
 	for i := 0; i < ListingCount; i++ {
 		wg.Add(1)

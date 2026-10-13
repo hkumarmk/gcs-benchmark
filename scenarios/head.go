@@ -12,8 +12,8 @@ import (
 // HeadObject returns a ScenarioFn for metadata-only reads.
 // Uses the 4KB fixture — no payload, measures pure request/response overhead.
 func HeadObject() ScenarioFn {
-	key := setup.ReadPrefix + "4k"
-	return func(ctx context.Context, c client.StorageClient) (time.Duration, int64, error) {
+	key := setup.ReadPrefix + "src/4k"
+	return func(ctx context.Context, c client.StorageClient, workerID int) (time.Duration, int64, error) {
 		_, err := c.Head(ctx, key)
 		if err != nil {
 			return 0, 0, fmt.Errorf("head %s: %w", key, err)

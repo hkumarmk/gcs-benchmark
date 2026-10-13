@@ -27,8 +27,8 @@ var writeData = func() map[int64][]byte {
 // Each iteration writes to a unique key to avoid GCS deduplication effects.
 func WriteObject(size int64) ScenarioFn {
 	data := writeData[size]
-	return func(ctx context.Context, c client.StorageClient) (time.Duration, int64, error) {
-		key := fmt.Sprintf("%s%s/%s/%d", setup.WritePrefix, sizeLabel(size), c.TransportName(), time.Now().UnixNano())
+	return func(ctx context.Context, c client.StorageClient, workerID int) (time.Duration, int64, error) {
+		key := fmt.Sprintf("%s%s/%s/w%d/%d", setup.WritePrefix, sizeLabel(size), c.TransportName(), workerID, time.Now().UnixNano())
 		if err := c.Write(ctx, key, data); err != nil {
 			return 0, 0, fmt.Errorf("write %s: %w", key, err)
 		}

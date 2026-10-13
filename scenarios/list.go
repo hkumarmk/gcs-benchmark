@@ -10,9 +10,8 @@ import (
 )
 
 // ListObjects returns a ScenarioFn that lists all objects under the listing prefix.
-// Measures time to iterate all 10,000 objects including pagination.
 func ListObjects() ScenarioFn {
-	return func(ctx context.Context, c client.StorageClient) (time.Duration, int64, error) {
+	return func(ctx context.Context, c client.StorageClient, workerID int) (time.Duration, int64, error) {
 		count, err := c.List(ctx, setup.ListingPrefix)
 		if err != nil {
 			return 0, 0, fmt.Errorf("list: %w", err)

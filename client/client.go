@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -22,8 +23,33 @@ type RangeResult struct {
 	Err   error
 }
 
-// StorageClient is the common interface implemented by both REST and gRPC clients.
-// Scenario code calls this interface and has no knowledge of the underlying transport.
+// ConnStats tracks connection-level behavior for a client instance.
+type ConnStats struct {
+	NewConnections   int64 // number of new TCP connections opened
+	ReusedConns      int64 // number of requests that reused an existing connection
+	HTTP2Connections int64 // number of connections that negotiated HTTP/2
+}
+
+// AtomicConnStats is a thread-safe connection statistics collector.
+type AtomicConnStats struct {
+	newConns  atomic.Int64
+	reused    atomic.Int64
+	http2     atomic.Int64
+}
+
+func (s *AtomicConnStats) RecordNew()    { s.newConns.Add(1) }
+func (s *AtomicConnStats) RecordReused() { s.reused.Add(1) }
+func (s *AtomicConnStats) RecordHTTP2()  { s.http2.Add(1) }
+
+func (s *AtomicConnStats) Snapshot() ConnStats {
+	return ConnStats{
+		NewConnections:   s.newConns.Load(),
+		ReusedConns:      s.reused.Load(),
+		HTTP2Connections: s.http2.Load(),
+	}
+}
+
+// StorageClient is the common interface implemented by REST and gRPC clients.
 type StorageClient interface {
 	// Read downloads a full object. Returns data, TTFB, and error.
 	Read(ctx context.Context, object string) ([]byte, time.Duration, error)
@@ -41,17 +67,16 @@ type StorageClient interface {
 	ReadRange(ctx context.Context, object string, offset, length int64) ([]byte, time.Duration, error)
 
 	// ReadRangesPipelined reads multiple ranges concurrently.
-	// REST: N concurrent goroutines each issuing one HTTP Range request.
-	// gRPC: single BidiReadObject stream with N outstanding requests.
 	ReadRangesPipelined(ctx context.Context, object string, ranges []Range) ([]RangeResult, error)
 
 	// WriteStreaming writes an object as a stream with the given chunk size.
-	// REST: GCS resumable upload.
-	// gRPC: BidiWriteObject.
 	WriteStreaming(ctx context.Context, object string, data []byte, chunkSize int) (time.Duration, error)
 
-	// TransportName returns "rest" or "grpc" — used in metric labelling.
+	// TransportName returns "rest", "rest-pool1", or "grpc".
 	TransportName() string
+
+	// ConnStats returns a snapshot of connection-level statistics.
+	ConnStats() ConnStats
 
 	Close() error
 }
