@@ -29,6 +29,7 @@ func NewGRPCClient(ctx context.Context, bucket string) (*GRPCClient, error) {
 	sc, err := storage.NewGRPCClient(ctx,
 		storage.WithGRPCBidiReads(),
 		storage.WithAppendableUploads(),
+		storage.WithDisabledClientMetrics(),
 	)
 	if err != nil {
 		return nil, err

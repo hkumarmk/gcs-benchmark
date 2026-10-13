@@ -2,11 +2,13 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
 
 	"cloud.google.com/go/storage"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 )
 
@@ -110,8 +112,12 @@ func ensureBucket(ctx context.Context, sc *storage.Client, project, bucket, regi
 		fmt.Printf("Bucket %s already exists.\n", bucket)
 		return nil
 	}
-	if err != storage.ErrBucketNotExist {
-		return err
+	// ErrBucketNotExist (possibly wrapped) or a 404 googleapi error both mean bucket needs creating
+	var apiErr *googleapi.Error
+	if !errors.Is(err, storage.ErrBucketNotExist) {
+		if !errors.As(err, &apiErr) || apiErr.Code != 404 {
+			return err
+		}
 	}
 	fmt.Printf("Creating bucket %s in %s...\n", bucket, region)
 	return b.Create(ctx, project, &storage.BucketAttrs{Location: region})
