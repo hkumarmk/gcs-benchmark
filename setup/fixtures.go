@@ -17,7 +17,7 @@ const (
 	RangePrefix   = "range-read-bench/"
 	ListingPrefix = "listing-bench/"
 	WritePrefix   = "write-bench/"
-	ListingCount  = 10000
+	ListingCount  = 1000
 )
 
 // ObjectSizes are the fixture sizes uploaded during setup.
@@ -133,7 +133,7 @@ func upload(ctx context.Context, sc *storage.Client, bucket, key string, data []
 }
 
 func uploadListing(ctx context.Context, sc *storage.Client, bucket string) error {
-	sem := make(chan struct{}, 64)
+	sem := make(chan struct{}, 8)
 	var wg sync.WaitGroup
 	errc := make(chan error, ListingCount)
 	payload := []byte("x") // 1-byte objects for listing fixtures

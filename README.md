@@ -9,16 +9,50 @@ See [`docs/gcs-benchmark-detailed-plan.md`](docs/gcs-benchmark-detailed-plan.md)
 ## Prerequisites
 
 - Go 1.21+
-- A GCP project with GCS enabled
-- A GCP account with `roles/storage.admin` on the project
+- A GCP project with billing enabled and the Cloud Storage API enabled
+- A GCP account with `roles/storage.admin` (or `roles/owner`) on the project
 - `gcloud` CLI installed and authenticated
+
+**Run from outside GCP** — see the note in [Running](#running).
 
 ---
 
-## Authentication
+## Setup: gcloud CLI and Go
+
+### Install gcloud CLI
 
 ```bash
-gcloud auth application-default login
+# macOS with Homebrew
+brew install --cask google-cloud-sdk
+
+# Other platforms: https://cloud.google.com/sdk/docs/install
+```
+
+### Install Go
+
+```bash
+# macOS with Homebrew
+brew install go
+
+# Other platforms: https://go.dev/dl/
+```
+
+### Authenticate
+
+```bash
+# Login to gcloud
+gcloud auth login
+
+# Set application default credentials used by the benchmark
+gcloud auth application-default login \
+  --scopes=https://www.googleapis.com/auth/cloud-platform
+
+# Set your project
+gcloud config set project YOUR_PROJECT_ID
+
+# Verify
+gcloud auth application-default print-access-token
+gcloud config list
 ```
 
 The benchmark uses Application Default Credentials. No service account key file needed.
